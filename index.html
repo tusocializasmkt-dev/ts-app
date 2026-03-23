@@ -854,25 +854,225 @@
     const SUPABASE_URL = 'https://dpdpaanksepnvjlvhhzj.supabase.co';
     const SUPABASE_KEY = 'sb_publishable_XFDFURlGAZilZXAfmY6vkw_M5ABk3Oj';
     const BUCKET = 'media';
-
     let supabaseClient = null;
-    try {
-      if (typeof supabase !== 'undefined') {
-        supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-      }
-    } catch(e) { console.warn('Supabase nao disponivel:', e); }
+    try { if (typeof supabase !== 'undefined') supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY); } catch(e) {}
 
     async function uploadToSupabase(file, folder) {
-      if (!supabaseClient) { console.warn('Supabase nao carregado — upload ignorado'); return null; }
+      if (!supabaseClient) return null;
       try {
         const ext = file.name.split('.').pop();
-        const path = folder + '/' + Date.now() + '_' + Math.random().toString(36).substr(2,6) + '.' + ext;
+        const path = folder+'/'+Date.now()+'_'+Math.random().toString(36).substr(2,6)+'.'+ext;
         const { data, error } = await supabaseClient.storage.from(BUCKET).upload(path, file, { upsert: true });
-        if (error) { console.error('Upload error:', error); return null; }
-        const { data: urlData } = supabaseClient.storage.from(BUCKET).getPublicUrl(path);
-        return urlData.publicUrl;
-      } catch(e) { console.error('Erro no upload:', e); return null; }
+        if (error) { console.error(error); return null; }
+        return supabaseClient.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+      } catch(e) { return null; }
     }
+
+    // DB helpers
+    async function dbGet(table, match) {
+      if (!supabaseClient) return null;
+      try { let q=supabaseClient.from(table).select('*'); if(match) Object.keys(match).forEach(k=>{q=q.eq(k,match[k]);}); const {data,error}=await q; if(error){console.error(error);return null;} return data; } catch(e){return null;}
+    }
+    async function dbUpsert(table, row) {
+      if (!supabaseClient) return null;
+      try { const {data,error}=await supabaseClient.from(table).upsert(row).select(); if(error){console.error(error);return null;} return data; } catch(e){return null;}
+    }
+    async function dbUpdate(table, match, values) {
+      if (!supabaseClient) return null;
+      try { let q=supabaseClient.from(table).update(values); Object.keys(match).forEach(k=>{q=q.eq(k,match[k]);}); const {data,error}=await q.select(); if(error){console.error(error);return null;} return data; } catch(e){return null;}
+    }
+
+    function getTimeAgo(d) {
+      const s=Math.floor((new Date()-new Date(d))/1000);
+      if(s<60)return 'agora'; if(s<3600)return Math.floor(s/60)+'min'; if(s<86400)return Math.floor(s/3600)+'h'; return Math.floor(s/86400)+' dias';
+    }
+
+    // Agency config
+    async function loadAgencyFromDB() {
+      const rows = await dbGet('agency_config', {id:'main'}); if(!rows||!rows[0]) return; const cfg=rows[0];
+      if(cfg.name){applyAgencyName(cfg.name);const ni=document.getElementById('agency-name-input');if(ni)ni.value=cfg.name;}
+      if(cfg.logo_url){applyLogo(cfg.logo_url);}
+      const fm={'agency-email':cfg.email,'agency-phone':cfg.phone,'agency-site':cfg.site,'agency-instagram':cfg.instagram,'agency-tiktok':cfg.tiktok,'agency-linkedin':cfg.linkedin,'agency-facebook':cfg.facebook};
+      Object.keys(fm).forEach(id=>{if(fm[id]){const el=document.getElementById(id);if(el)el.value=fm[id];}});
+    }
+    async function saveAgencyToDB(fields) { fields.id='main'; fields.updated_at=new Date().toISOString(); await dbUpsert('agency_config',fields); }
+
+    // Brands
+    async function loadBrandsFromDB() {
+      const rows = await dbGet('brands'); if(!rows) return;
+      rows.forEach(b=>{
+        if(window.clientsData&&window.clientsData[b.id]){
+          const c=window.clientsData[b.id];
+          if(b.name) c.name=b.name; if(b.segment) c.seg=b.segment; if(b.responsible_name) c.responsible=b.responsible_name;
+          if(b.status) c.status=b.status; if(b.email) c.email=b.email; if(b.phone) c.phone=b.phone;
+          if(b.cnpj) c.cnpj=b.cnpj; if(b.instagram) c.instagram=b.instagram; if(b.tiktok) c.tiktok=b.tiktok;
+          if(b.site) c.site=b.site; if(b.contract_start) c.contractStart=b.contract_start;
+          if(b.contract_end) c.contractEnd=b.contract_end; if(b.contract_value) c.contractValue=b.contract_value;
+          if(b.pix_key) c.pixKey=b.pix_key; if(b.drive_link) c.driveLink=b.drive_link;
+          if(b.contract_link) c.contractLink=b.contract_link; if(b.logo_url) c.logoUrl=b.logo_url;
+        }
+        if(b.logo_url){
+          const el=document.getElementById('eco-logo-'+b.id);
+          if(el) el.innerHTML='<img src="'+b.logo_url+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" />';
+        }
+      });
+    }
+    async function saveBrandToDB(brandId, fields) { fields.id=brandId; fields.updated_at=new Date().toISOString(); await dbUpsert('brands',fields); }
+
+    // Notifications
+    async function loadNotificationsFromDB() {
+      const rows = await dbGet('notifications'); if(!rows||!rows.length) return;
+      const list=document.getElementById('notif-list'); if(!list) return;
+      list.innerHTML='';
+      rows.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)).forEach(n=>{
+        const item=document.createElement('div');
+        item.id='notif-item-'+n.id; item.setAttribute('data-notif-recipient',n.recipient); item.setAttribute('data-notif-date',n.created_at.split('T')[0]);
+        item.style.cssText='background:var(--white);border:1.5px solid var(--black);border-radius:var(--radius);padding:1rem 1.25rem;display:flex;align-items:flex-start;gap:12px;';
+        item.innerHTML='<div style="width:8px;height:8px;border-radius:50%;background:var(--green);margin-top:5px;flex-shrink:0;"></div>'+
+          '<div style="flex:1;"><div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">'+
+          '<div style="font-size:0.85rem;font-weight:500;color:var(--black);">'+n.title+'</div>'+
+          '<span style="font-size:0.65rem;background:var(--gray-100);color:var(--gray-500);padding:2px 8px;border-radius:10px;">'+n.type+'</span></div>'+
+          '<div style="font-size:0.78rem;color:var(--gray-500);">'+n.message+'</div>'+
+          '<div style="font-size:0.7rem;color:var(--gray-400);margin-top:4px;">Para: '+n.recipient+'</div></div>'+
+          '<div style="font-size:0.7rem;color:var(--gray-400);flex-shrink:0;">'+getTimeAgo(n.created_at)+'</div>';
+        list.appendChild(item);
+      });
+    }
+    async function saveNotificationToDB(recipient, title, message) {
+      await dbUpsert('notifications',{recipient,title,message,type:'manual',created_at:new Date().toISOString()});
+    }
+
+    // Metrics
+    async function saveMetricsToDB(brandId, type, fields) {
+      fields.brand_id=brandId; fields.created_at=new Date().toISOString();
+      await dbUpsert(type==='organic'?'metrics_organic':'metrics_paid', fields);
+    }
+    async function loadMetricsFromDB(brandId) {
+      const org=await dbGet('metrics_organic',{brand_id:brandId}); const paid=await dbGet('metrics_paid',{brand_id:brandId});
+      if(org&&org.length){const m=org[org.length-1];
+        if(m.followers){const el=document.getElementById('m-followers');if(el)el.textContent=Number(m.followers)>=1000?(m.followers/1000).toFixed(1)+'k':m.followers;}
+        if(m.new_followers){const el=document.getElementById('m-followers-diff');if(el)el.textContent=m.new_followers+' vs mes ant.';}
+        if(m.engagement){const el=document.getElementById('m-engagement');if(el)el.textContent=m.engagement+'%';}
+        if(m.avg_reach){const el=document.getElementById('m-reach');if(el)el.textContent=Number(m.avg_reach)>=1000?(m.avg_reach/1000).toFixed(1)+'k':m.avg_reach;}
+        if(m.impressions){const el=document.getElementById('m-impressions');if(el)el.textContent=Number(m.impressions)>=1000?Math.round(m.impressions/1000)+'k':m.impressions;}
+      }
+      if(paid&&paid.length){const p=paid[paid.length-1];
+        if(p.investment){const el=document.getElementById('p-investment');if(el)el.textContent='R$'+p.investment;}
+        if(p.reach){const el=document.getElementById('p-reach');if(el)el.textContent=Number(p.reach)>=1000?(p.reach/1000).toFixed(1)+'k':p.reach;}
+        if(p.clicks){const el=document.getElementById('p-clicks');if(el)el.textContent=Number(p.clicks)>=1000?(p.clicks/1000).toFixed(1)+'k':p.clicks;}
+        if(p.cpc){const el=document.getElementById('p-cpc');if(el)el.textContent='R$'+p.cpc;}
+        if(p.ctr){const el=document.getElementById('p-ctr');if(el)el.textContent=p.ctr+'%';}
+        if(p.conversions){const el=document.getElementById('p-conversions');if(el)el.textContent=p.conversions;}
+        if(p.cpa){const el=document.getElementById('p-cpa');if(el)el.textContent='R$'+p.cpa;}
+      }
+    }
+
+    // Client logo upload
+    async function uploadClientLogo(input, brandId) {
+      if(!input.files||!input.files[0]) return;
+      showToast('Enviando logo...');
+      const url=await uploadToSupabase(input.files[0],'logos');
+      if(url){
+        await saveBrandToDB(brandId,{logo_url:url});
+        const el=document.getElementById('eco-logo-'+brandId);
+        if(el) el.innerHTML='<img src="'+url+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" />';
+        if(window.clientsData&&window.clientsData[brandId]) window.clientsData[brandId].logoUrl=url;
+        showToast('Logo atualizada!');
+      } else { showToast('Erro ao enviar logo.'); }
+    }
+
+    // Init
+    async function initFromDB() {
+      await loadAgencyFromDB();
+      await loadBrandsFromDB();
+      await loadNotificationsFromDB();
+      await loadTrashFromDB();
+    }
+
+    // ── POSTS ─────────────────────────────────────────────
+    async function savePostToDB(brandId, postData) {
+      postData.brand_id = brandId;
+      postData.updated_at = new Date().toISOString();
+      return await dbUpsert('posts', postData);
+    }
+    async function loadPostsFromDB(brandId) {
+      return await dbGet('posts', {brand_id: brandId});
+    }
+    async function updatePostStatusInDB(postId, status, feedback) {
+      await dbUpdate('posts', {id: postId}, {status, client_feedback: feedback||null, updated_at: new Date().toISOString()});
+    }
+    async function deletePostFromDB(postId) {
+      if (!supabaseClient) return;
+      try { await supabaseClient.from('posts').delete().eq('id', postId); } catch(e) {}
+    }
+
+    // ── FATURAS ───────────────────────────────────────────
+    async function saveInvoiceToDB(brandId, invoiceData) {
+      invoiceData.brand_id = brandId;
+      invoiceData.updated_at = new Date().toISOString();
+      return await dbUpsert('invoices', invoiceData);
+    }
+    async function loadInvoicesFromDB(brandId) {
+      return await dbGet('invoices', {brand_id: brandId});
+    }
+    async function updateInvoiceInDB(invoiceId, fields) {
+      fields.updated_at = new Date().toISOString();
+      await dbUpdate('invoices', {id: invoiceId}, fields);
+    }
+
+    // ── MELHORES POSTS ────────────────────────────────────
+    async function saveBestPostToDB(brandId, postData) {
+      await dbUpsert('best_posts', {brand_id: brandId, ...postData, created_at: new Date().toISOString()});
+    }
+
+    // ── INFO ADICIONAL DO CLIENTE ─────────────────────────
+    async function saveClientExtraInfoToDB(brandId, info) {
+      await dbUpdate('brands', {id: brandId}, {extra_info: info, updated_at: new Date().toISOString()});
+    }
+    async function loadClientExtraInfoFromDB(brandId) {
+      const rows = await dbGet('brands', {id: brandId});
+      return rows && rows[0] ? rows[0].extra_info : null;
+    }
+
+    // ── LIXEIRA ───────────────────────────────────────────
+    async function saveTrashToDB(item) {
+      await dbUpsert('trash_items', {
+        id: item.id, type: item.type, label: item.label,
+        html_content: item.html,
+        deleted_at: item.deletedAt,
+        expires_at: new Date(new Date(item.deletedAt).getTime() + 24*60*60*1000).toISOString()
+      });
+    }
+    async function deleteFromTrashDB(id) {
+      if (!supabaseClient) return;
+      try { await supabaseClient.from('trash_items').delete().eq('id', id); } catch(e) {}
+    }
+    async function loadTrashFromDB() {
+      const rows = await dbGet('trash_items'); if (!rows) return;
+      const now = new Date();
+      const valid = rows.filter(r => new Date(r.expires_at) > now);
+      // Sync with localStorage
+      const items = valid.map(r => ({
+        id: r.id, type: r.type, label: r.label,
+        html: r.html_content, deletedAt: r.deleted_at,
+        parentId: null
+      }));
+      localStorage.setItem('ts_trash', JSON.stringify(items));
+      updateTrashBadge();
+    }
+
+    // ── PROMESSA DE PAGAMENTO ─────────────────────────────
+    async function savePromiseToDB(brandId, invoiceId, promiseDate, note) {
+      await updateInvoiceInDB(invoiceId, {
+        promise_date: promiseDate, promise_note: note, promise_status: 'pending'
+      });
+    }
+
+    // ── CONTRATO / PIX ────────────────────────────────────
+    async function saveContractToDB(brandId, fields) {
+      await saveBrandToDB(brandId, fields);
+    }
+
   </script>
 </head>
 <body>
@@ -1442,7 +1642,7 @@
             <div style="background:var(--white);border:1px solid var(--gray-200);border-radius:var(--radius);padding:1.25rem;margin-bottom:1rem;">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:0.75rem;border-bottom:1px solid var(--gray-100);">
                 <div style="font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--gray-500);">Dados do contrato</div>
-                <button onclick="showToast('Contrato atualizado!')" style="font-size:0.72rem;padding:4px 12px;border:1px solid var(--gray-200);border-radius:20px;background:var(--white);color:var(--gray-600);cursor:pointer;font-family:var(--font-body);" onmouseover="this.style.background='var(--black)';this.style.color='var(--white)';this.style.borderColor='var(--black)'" onmouseout="this.style.background='var(--white)';this.style.color='var(--gray-600)';this.style.borderColor='var(--gray-200)'">Editar contrato</button>
+                <button onclick="saveContractData()" style="font-size:0.72rem;padding:4px 12px;border:1px solid var(--gray-200);border-radius:20px;background:var(--white);color:var(--gray-600);cursor:pointer;font-family:var(--font-body);" onmouseover="this.style.background='var(--black)';this.style.color='var(--white)';this.style.borderColor='var(--black)'" onmouseout="this.style.background='var(--white)';this.style.color='var(--gray-600)';this.style.borderColor='var(--gray-200)'">Editar contrato</button>
               </div>
               <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
                 <div>
@@ -1474,7 +1674,7 @@
                   <div style="font-size:0.68rem;color:var(--gray-400);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Chave Pix da agencia</div>
                   <div style="display:flex;gap:6px;">
                     <input id="pix-key-input" type="text" placeholder="CPF, CNPJ, e-mail ou chave" value="pagamentos@tsagency.com.br" style="flex:1;padding:7px 10px;border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-family:var(--font-body);font-size:0.8rem;background:var(--gray-100);color:var(--black);outline:none;" />
-                    <button onclick="showToast('Chave Pix salva!')" style="padding:7px 12px;border:none;border-radius:var(--radius-sm);background:var(--black);color:var(--white);font-family:var(--font-body);font-size:0.75rem;cursor:pointer;">Salvar</button>
+                    <button onclick="savePixKey()" style="padding:7px 12px;border:none;border-radius:var(--radius-sm);background:var(--black);color:var(--white);font-family:var(--font-body);font-size:0.75rem;cursor:pointer;">Salvar</button>
                   </div>
                 </div>
                 <div>
@@ -1493,7 +1693,7 @@
             <!-- Faturas -->
             <div class="section-header">
               <div class="section-title">Faturas</div>
-              <button class="add-btn" onclick="showToast('Nova fatura adicionada!')">+ Nova fatura</button>
+              <button class="add-btn" onclick="addNewInvoice()">+ Nova fatura</button>
             </div>
             <div style="background:var(--white);border:1px solid var(--gray-200);border-radius:var(--radius);overflow:hidden;margin-bottom:1rem;">
               <table style="width:100%;border-collapse:collapse;font-size:0.825rem;">
@@ -1528,7 +1728,7 @@
                     <td style="padding:12px 16px;">
                       <div class="inv-view" style="display:flex;gap:6px;flex-wrap:wrap;">
                         <button onclick="editInvoice(1)" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--gray-200);border-radius:6px;background:var(--white);color:var(--gray-600);cursor:pointer;font-family:var(--font-body);">Editar</button>
-                        <button onclick="showToast('Baixa dada na fatura!')" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--green);border-radius:6px;background:var(--white);color:#166534;cursor:pointer;font-family:var(--font-body);">Dar baixa</button>
+                        <button onclick="darBaixaFatura(this)" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--green);border-radius:6px;background:var(--white);color:#166534;cursor:pointer;font-family:var(--font-body);">Dar baixa</button>
                       </div>
                       <div class="inv-edit" style="display:none;gap:6px;">
                         <button onclick="saveInvoice(1)" style="font-size:0.72rem;padding:4px 12px;border:none;border-radius:6px;background:var(--black);color:var(--white);cursor:pointer;font-family:var(--font-body);">Salvar</button>
@@ -1559,7 +1759,7 @@
                     <td style="padding:12px 16px;">
                       <div class="inv-view" style="display:flex;gap:6px;flex-wrap:wrap;">
                         <button onclick="editInvoice(2)" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--gray-200);border-radius:6px;background:var(--white);color:var(--gray-600);cursor:pointer;font-family:var(--font-body);">Editar</button>
-                        <button onclick="showToast('Baixa dada na fatura!')" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--green);border-radius:6px;background:var(--white);color:#166534;cursor:pointer;font-family:var(--font-body);">Dar baixa</button>
+                        <button onclick="darBaixaFatura(this)" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--green);border-radius:6px;background:var(--white);color:#166534;cursor:pointer;font-family:var(--font-body);">Dar baixa</button>
                       </div>
                       <div class="inv-edit" style="display:none;gap:6px;">
                         <button onclick="saveInvoice(2)" style="font-size:0.72rem;padding:4px 12px;border:none;border-radius:6px;background:var(--black);color:var(--white);cursor:pointer;font-family:var(--font-body);">Salvar</button>
@@ -1590,7 +1790,7 @@
                     <td style="padding:12px 16px;">
                       <div class="inv-view" style="display:flex;gap:6px;flex-wrap:wrap;">
                         <button onclick="editInvoice(3)" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--gray-200);border-radius:6px;background:var(--white);color:var(--gray-600);cursor:pointer;font-family:var(--font-body);">Editar</button>
-                        <button onclick="showToast('Baixa dada na fatura!')" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--green);border-radius:6px;background:var(--white);color:#166534;cursor:pointer;font-family:var(--font-body);">Dar baixa</button>
+                        <button onclick="darBaixaFatura(this)" style="font-size:0.72rem;padding:4px 10px;border:1px solid var(--green);border-radius:6px;background:var(--white);color:#166534;cursor:pointer;font-family:var(--font-body);">Dar baixa</button>
                       </div>
                       <div class="inv-edit" style="display:none;gap:6px;">
                         <button onclick="saveInvoice(3)" style="font-size:0.72rem;padding:4px 12px;border:none;border-radius:6px;background:var(--black);color:var(--white);cursor:pointer;font-family:var(--font-body);">Salvar</button>
@@ -1886,7 +2086,7 @@
               <div style="font-weight:600;margin-bottom:4px;">Promessa de pagamento registrada</div>
               <div id="promise-text">Cliente comprometeu pagamento para —</div>
               <div style="display:flex;gap:8px;margin-top:10px;">
-                <button onclick="showToast('Promessa aprovada!');document.getElementById('promise-info').style.display='none'" style="font-size:0.72rem;padding:4px 12px;border:none;border-radius:6px;background:#166534;color:var(--white);cursor:pointer;font-family:var(--font-body);">Aprovar promessa</button>
+                <button onclick="aprovarPromessa()" style="font-size:0.72rem;padding:4px 12px;border:none;border-radius:6px;background:#166534;color:var(--white);cursor:pointer;font-family:var(--font-body);">Aprovar promessa</button>
                 <button onclick="document.getElementById('promise-info').style.display='none'" style="font-size:0.72rem;padding:4px 12px;border:1px solid #fde68a;border-radius:6px;background:var(--white);color:#92400e;cursor:pointer;font-family:var(--font-body);">Recusar</button>
               </div>
             </div>
@@ -2995,11 +3195,11 @@
       </div>
       <div class="field">
         <label>Data de publicacao</label>
-        <input type="date" style="width:100%;padding:0.7rem 1rem;border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-family:var(--font-body);font-size:0.875rem;background:var(--gray-100);color:var(--black);outline:none;" />
+        <input type="date" id="post-date-input" style="width:100%;padding:0.7rem 1rem;border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-family:var(--font-body);font-size:0.875rem;background:var(--gray-100);color:var(--black);outline:none;" />
       </div>
       <div class="field">
         <label>Horario</label>
-        <input type="time" style="width:100%;padding:0.7rem 1rem;border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-family:var(--font-body);font-size:0.875rem;background:var(--gray-100);color:var(--black);outline:none;" />
+        <input type="time" id="post-time-input" style="width:100%;padding:0.7rem 1rem;border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-family:var(--font-body);font-size:0.875rem;background:var(--gray-100);color:var(--black);outline:none;" />
       </div>
     </div>
 
@@ -3079,7 +3279,7 @@
 
     <div class="modal-actions">
       <button onclick="closeNewPostModal()" style="flex:1;padding:0.8rem;border:1px solid var(--gray-200);border-radius:var(--radius-sm);background:var(--white);color:var(--gray-600);font-family:var(--font-body);font-size:0.875rem;cursor:pointer;">Cancelar</button>
-      <button onclick="showToast('Postagem criada com sucesso!');closeNewPostModal();" style="flex:2;padding:0.8rem;border:none;border-radius:var(--radius-sm);background:var(--black);color:var(--white);font-family:var(--font-body);font-size:0.875rem;font-weight:500;cursor:pointer;">Criar postagem</button>
+      <button onclick="createPostFromModal();closeNewPostModal();" style="flex:2;padding:0.8rem;border:none;border-radius:var(--radius-sm);background:var(--black);color:var(--white);font-family:var(--font-body);font-size:0.875rem;font-weight:500;cursor:pointer;">Criar postagem</button>
     </div>
   </div>
 </div>
@@ -3262,15 +3462,15 @@ function trashItem(type, elementId, label) {
 
   // Save to trash list
   const items = getTrash();
-  items.push({
-    id: elementId,
-    type: type,
-    label: label,
+  const newItem = {
+    id: elementId, type: type, label: label,
     deletedAt: new Date().toISOString(),
     html: el.outerHTML,
     parentId: el.parentElement ? el.parentElement.id : null,
-  });
+  };
+  items.push(newItem);
   saveTrash(items);
+  saveTrashToDB(newItem);
 
   // Hide element with animation
   el.style.transition = 'all 0.25s ease';
@@ -3402,11 +3602,14 @@ function deletePermItem(id) {
   const items = getTrash();
   const item = items.find(function(i) { return i.id === id; });
   saveTrash(items.filter(function(i) { return i.id !== id; }));
+  deleteFromTrashDB(id);
   renderTrashList();
   if (item) showToast(item.label + ' apagado definitivamente.');
 }
 
 function emptyTrash() {
+  const items = getTrash();
+  items.forEach(function(item) { deleteFromTrashDB(item.id); });
   saveTrash([]);
   renderTrashList();
   showToast('Lixeira esvaziada!');
@@ -3461,6 +3664,7 @@ function doLogin() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-screen').style.display = 'block';
   setupUser();
+  initFromDB();
 }
 
 function setupUser() {
@@ -3758,6 +3962,8 @@ function openClient(clientKey) {
     if (el.style.fontSize === '0.8rem') el.textContent = c.name;
   });
 
+  window._currentBrandId = clientKey;
+  loadMetricsFromDB(clientKey);
   showPage('client-detail');
   switchDetailTab('posts');
 }
@@ -3882,6 +4088,9 @@ function cpSendText(id) {
     result.innerHTML =
       cpBuildTextResult(result, id, label, text, border, color);
   }
+  // Save to DB
+  const postCard = document.getElementById('cp-card-' + id);
+  if (postCard && postCard.dataset.postId) updatePostStatusInDB(postCard.dataset.postId, type==='reject'?'rejected':'adjustment', text);
   showToast(type === 'reject' ? 'Reprovacao enviada!' : 'Solicitacao enviada!');
 }
 
@@ -3929,6 +4138,7 @@ function sendNotif() {
   item.appendChild(trashBtnEl);
   if (list) list.insertBefore(item, list.firstChild);
   closeNotifModal();
+  saveNotificationToDB(dest.value, title, msg);
   showToast('Notificacao enviada para ' + destLabel + '!');
   document.getElementById('notif-title-input').value = '';
   document.getElementById('notif-msg-input').value = '';
@@ -3975,6 +4185,20 @@ function saveProfile() {
     if (view && edit) view.textContent = edit.value || '—';
   });
   cancelEditProfile();
+  // Save to DB
+  if (window._currentBrandId) {
+    const fields = {};
+    document.querySelectorAll('.pfield').forEach(field => {
+      const lbl  = field.querySelector('.plabel');
+      const edit = field.querySelector('.pedit');
+      if (lbl && edit) {
+        const map = {'Nome':' responsible_name','E-mail':'email','Telefone':'phone','WhatsApp':'whatsapp','Nome da empresa':'name','CNPJ':'cnpj','Segmento':'segment','Instagram':'instagram','TikTok':'tiktok','Site':'site'};
+        const key = map[lbl.textContent.trim()];
+        if (key) fields[key.trim()] = edit.value;
+      }
+    });
+    saveBrandToDB(window._currentBrandId, fields);
+  }
   showToast('Informacoes salvas com sucesso!');
 }
 
@@ -3994,6 +4218,8 @@ function updateClientStatus(sel) {
     detailStatus.className = 'client-status ' + classMap[val];
     detailStatus.innerHTML = '<span class="status-dot"></span>' + labels[val];
   }
+  // Save to DB
+  if (window._currentBrandId) saveBrandToDB(window._currentBrandId, {status: val});
   showToast('Status alterado para: ' + labels[val]);
 }
 
@@ -4022,12 +4248,25 @@ function saveInvoice(id) {
   const valView  = row.querySelector('#inv-val-' + id + ' .inv-view');
   const dueView  = row.querySelector('#inv-due-' + id + ' .inv-view');
   const statView = row.querySelector('#inv-status-' + id + ' .inv-view');
-  if (descEl && descView) descView.textContent = descEl.value;
-  if (valEl && valView)   valView.textContent  = valEl.value;
-  if (dueEl && dueEl.value && dueView) dueView.textContent = new Date(dueEl.value + 'T00:00:00').toLocaleDateString('pt-BR');
+  const desc = descEl ? descEl.value : '';
+  const val  = valEl  ? valEl.value  : '';
+  const due  = dueEl  ? dueEl.value  : '';
+  const stat = statEl ? statEl.value : '';
+  if (descEl && descView) descView.textContent = desc;
+  if (valEl && valView)   valView.textContent  = val;
+  if (dueEl && due && dueView) dueView.textContent = new Date(due + 'T00:00:00').toLocaleDateString('pt-BR');
   if (statEl && statView) {
-    const [label, cls] = statusMap[statEl.value] || ['Pendente', 's-pending'];
+    const [label, cls] = statusMap[stat] || ['Pendente', 's-pending'];
     statView.innerHTML = '<span class="client-status ' + cls + '" style="font-size:0.72rem;"><span class="status-dot"></span>' + label + '</span>';
+  }
+  // Save to DB
+  if (window._currentBrandId) {
+    const invoiceData = {
+      id: 'inv-' + window._currentBrandId + '-' + id,
+      description: desc, amount: val, due_date: due, status: stat,
+      month_ref: desc.replace('Gestao de redes ', '')
+    };
+    saveInvoiceToDB(window._currentBrandId, invoiceData);
   }
   cancelInvoice(id);
   showToast('Fatura atualizada!');
@@ -4048,6 +4287,10 @@ function submitPromise() {
   const cInfo = document.getElementById('client-promise-info');
   const cText = document.getElementById('client-promise-text');
   if (cInfo && cText) { cText.textContent = 'Pagamento prometido para ' + formatted + '. Aguardando confirmacao da agencia.' + (overMonth ? ' Atencao: data fora do mes.' : ''); cInfo.style.display = 'block'; }
+  // Save to DB
+  if (window._currentBrandId) {
+    savePromiseToDB(window._currentBrandId, 'inv-'+window._currentBrandId+'-promise', formatted, obs);
+  }
   closePromiseModal();
   showToast('Promessa registrada para ' + formatted);
 }
@@ -4077,6 +4320,10 @@ function saveMetrics() {
   const e  = document.getElementById('m-inp-engagement').value.trim();
   const r  = document.getElementById('m-inp-reach').value.trim();
   const i  = document.getElementById('m-inp-impressions').value.trim();
+  // Save organic to DB
+  if (window._currentBrandId && (f||nf||e||r||i)) {
+    saveMetricsToDB(window._currentBrandId, 'organic', {followers:f||null,new_followers:nf||null,engagement:e||null,avg_reach:r||null,impressions:i||null});
+  }
   if (f)  { const el = document.getElementById('m-followers');   if (el) el.textContent = fmt(f); }
   if (nf) { const el = document.getElementById('m-followers-diff'); if (el) el.textContent = nf + ' vs mes ant.'; }
   if (e)  { const el = document.getElementById('m-engagement');  if (el) el.textContent = e + '%'; }
@@ -4103,6 +4350,14 @@ function saveMetrics() {
   if (pca) { const el = document.getElementById('p-cpa');         if (el) el.textContent = 'R$'+pca; }
   if (pdf) { const el = document.getElementById('p-conversions-diff'); if (el) el.textContent = pdf; }
 
+  // Save paid to DB
+  if (window._currentBrandId && (pi||pr||pc||pcpc||pct||pcv||pca)) {
+    saveMetricsToDB(window._currentBrandId, 'paid', {
+      investment:pi||null, reach:pr||null, impressions:pim||null,
+      clicks:pc||null, cpc:pcpc||null, ctr:pct||null,
+      conversions:pcv||null, cpa:pca||null, diff_note:pdf||null
+    });
+  }
   closeMetricsModal();
   showToast('Metricas salvas!');
   generateAiAnalysis();
@@ -4205,13 +4460,15 @@ function addProofImages(input) {
     const img = document.createElement('img');
     img.style.cssText = 'width:80px;height:80px;border-radius:6px;object-fit:cover;border:1px solid var(--gray-200);opacity:0.5;';
     container.appendChild(img);
-    // Show local preview immediately
     const reader = new FileReader();
     reader.onload = function(e) { img.src = e.target.result; };
     reader.readAsDataURL(file);
-    // Upload to Supabase
     uploadToSupabase(file, 'metricas').then(function(url) {
-      if (url) { img.src = url; img.style.opacity = '1'; img.title = url; }
+      if (url) {
+        img.src = url; img.style.opacity = '1'; img.title = url;
+        // Save URL to DB metrics
+        if (window._currentBrandId) dbUpsert('metrics_organic', {brand_id:window._currentBrandId, proof_url:url, created_at:new Date().toISOString()});
+      }
     });
   });
   showToast(input.files.length + ' print(s) adicionado(s)!');
@@ -4273,17 +4530,17 @@ function filterPosts(btn, status) {
 function uploadLogo(input) {
   if (!input.files || !input.files[0]) return;
   const file = input.files[0];
-  // Save locally for instant display
   const reader = new FileReader();
-  reader.onload = function(e) {
-    localStorage.setItem('ts_logo', e.target.result);
-    applyLogo(e.target.result);
-    showToast('Logo atualizada!');
-  };
+  reader.onload = function(e) { localStorage.setItem('ts_logo', e.target.result); applyLogo(e.target.result); };
   reader.readAsDataURL(file);
-  // Also upload to Supabase for persistence
+  showToast('Enviando logo...');
   uploadToSupabase(file, 'logos').then(function(url) {
-    if (url) localStorage.setItem('ts_logo_url', url);
+    if (url) {
+      localStorage.setItem('ts_logo_url', url);
+      saveAgencyToDB({logo_url: url});
+      applyLogo(url);
+      showToast('Logo atualizada!');
+    }
   });
 }
 function applyLogo(src) {
@@ -4297,6 +4554,7 @@ function saveAgencyName() {
   if (!name) return;
   localStorage.setItem('ts_agency_name', name);
   applyAgencyName(name);
+  saveAgencyToDB({name: name});
   showToast('Nome atualizado!');
 }
 function applyAgencyName(name) {
@@ -4328,6 +4586,19 @@ function submitOnboarding() {
   if (pass.length < 6) { showToast('A senha deve ter pelo menos 6 caracteres'); return; }
   if (pass !== confirm) { if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--red)'; msg.textContent = 'As senhas nao coincidem.'; } return; }
   if (msg) msg.style.display = 'none';
+  // Save new brand to DB
+  const brandData = {
+    id: 'brand_' + Date.now(),
+    name: (document.getElementById('new-brand-name')||{}).value || 'Nova marca',
+    responsible_name: (document.getElementById('new-resp-name')||{}).value || '',
+    email: (document.getElementById('new-client-email')||{}).value || '',
+    instagram: (document.getElementById('new-brand-instagram')||{}).value || '',
+    segment: (document.getElementById('new-brand-segment')||{}).value || '',
+    login_email: email, login_pass: pass,
+    status: 'active',
+    created_at: new Date().toISOString()
+  };
+  saveBrandToDB(brandData.id, brandData);
   showToast('Cliente cadastrado com sucesso!');
   showPage('clients');
 }
@@ -4335,13 +4606,18 @@ function submitOnboarding() {
 // --- INVOICE UPLOAD (simulado) ---
 function simulateInvoiceUpload(input) {
   if (!input.files || !input.files[0]) return;
-  const name = input.files[0].name;
+  const file = input.files[0];
   const nameEl = document.getElementById('invoice-file-name');
   const subEl  = document.getElementById('invoice-file-sub');
   const btn    = document.getElementById('download-invoice-btn');
-  if (nameEl) nameEl.textContent = name;
-  if (subEl)  subEl.textContent  = 'Disponivel para download';
-  if (btn)    btn.style.display  = 'block';
+  if (nameEl) nameEl.textContent = file.name + ' (enviando...)';
+  uploadToSupabase(file, 'faturas').then(function(url) {
+    if (nameEl) nameEl.textContent = file.name;
+    if (subEl)  subEl.textContent  = 'Disponivel para download';
+    if (btn)  { btn.style.display = 'block'; if (url) btn.onclick = function(){ window.open(url,'_blank'); }; }
+    if (url && window._currentBrandId) saveBrandToDB(window._currentBrandId, {invoice_pdf_url: url});
+    showToast('Fatura enviada! Cliente pode baixar.');
+  });
 }
 
 // --- ENTER KEY LOGIN ---
@@ -4424,6 +4700,23 @@ function saveStartMetrics() {
     if (cv) document.querySelectorAll('#pc-start-conversions').forEach(el => el.textContent = cv);
     if (m) document.querySelectorAll('.paid-start-label').forEach(el => el.textContent = m);
   }
+  // Save to DB
+  if (window._currentBrandId) {
+    const type2 = modal.dataset.type;
+    if (type2==='organic') {
+      const fi=document.getElementById('si-followers').value;
+      const ei=document.getElementById('si-engagement').value;
+      const ri=document.getElementById('si-reach').value;
+      const mi=document.getElementById('si-month').value;
+      saveBrandToDB(window._currentBrandId, {start_followers:fi||null,start_engagement:ei||null,start_reach:ri||null,start_month:mi||null});
+    } else {
+      const rp=document.getElementById('pi-reach').value;
+      const cp=document.getElementById('pi-cpc').value;
+      const cvp=document.getElementById('pi-conversions').value;
+      const mp=document.getElementById('pi-month').value;
+      saveBrandToDB(window._currentBrandId, {start_paid_reach:rp||null,start_paid_cpc:cp||null,start_paid_conversions:cvp||null,start_paid_month:mp||null});
+    }
+  }
   closeEditStartModal();
   showToast('Metricas do inicio atualizadas!');
 }
@@ -4439,7 +4732,10 @@ function addProofImagesPaid(input) {
     reader.onload = function(e) { img.src = e.target.result; };
     reader.readAsDataURL(file);
     uploadToSupabase(file, 'metricas-pago').then(function(url) {
-      if (url) { img.src = url; img.style.opacity = '1'; img.title = url; }
+      if (url) {
+        img.src = url; img.style.opacity = '1'; img.title = url;
+        if (window._currentBrandId) dbUpsert('metrics_paid', {brand_id:window._currentBrandId, proof_url:url, created_at:new Date().toISOString()});
+      }
     });
   });
   showToast(input.files.length + ' print(s) adicionado(s)!');
@@ -4465,7 +4761,7 @@ function handlePostFileUpload(input) {
   uploadToSupabase(file, 'posts').then(function(url) {
     if (url) {
       if (nameEl) nameEl.textContent = file.name + ' ✓';
-      console.log('Uploaded:', url);
+      window._lastUploadedMediaUrl = url;
     } else {
       if (nameEl) nameEl.textContent = file.name + ' (erro no upload)';
     }
@@ -4592,11 +4888,13 @@ function useAiCaption() {
 function saveAgencyInfo() {
   const fields = ['agency-email','agency-phone','agency-site','agency-instagram','agency-tiktok','agency-linkedin','agency-facebook'];
   const data = {};
-  fields.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) data[id] = el.value.trim();
-  });
+  fields.forEach(id => { const el = document.getElementById(id); if (el) data[id] = el.value.trim(); });
   localStorage.setItem('ts_agency_info', JSON.stringify(data));
+  saveAgencyToDB({
+    email: data['agency-email'], phone: data['agency-phone'], site: data['agency-site'],
+    instagram: data['agency-instagram'], tiktok: data['agency-tiktok'],
+    linkedin: data['agency-linkedin'], facebook: data['agency-facebook']
+  });
   showToast('Informacoes da agencia salvas!');
 }
 
@@ -4613,9 +4911,14 @@ function loadAgencyInfo() {
 }
 
 function saveAdminAccess() {
-  const pass = document.getElementById('admin-pass-new').value;
+  const emailEl = document.getElementById('admin-email-input');
+  const pass    = document.getElementById('admin-pass-new').value;
   const confirm = document.getElementById('admin-pass-confirm').value;
   if (pass && pass !== confirm) { showToast('As senhas nao coincidem'); return; }
+  const updates = {};
+  if (emailEl && emailEl.value) { updates.admin_email = emailEl.value; }
+  if (pass) { updates.admin_pass = pass; }
+  if (Object.keys(updates).length) saveAgencyToDB(updates);
   showToast('Acesso do administrador atualizado!');
   document.getElementById('admin-pass-new').value = '';
   document.getElementById('admin-pass-confirm').value = '';
@@ -4988,6 +5291,8 @@ function calSendText() {
     result.appendChild(msg);
     result.appendChild(row);
   }
+  // Save to DB
+  if (currentCalPost && currentCalPost.postId) updatePostStatusInDB(currentCalPost.postId, type==='reject'?'rejected':'adjustment', text);
   showToast(type === 'reject' ? 'Reprovacao enviada!' : 'Solicitacao enviada!');
 }
 
@@ -5064,6 +5369,7 @@ function openNewPostForDay(day) {
     saveBtn.onclick = function() {
       var sel = document.getElementById('post-client-sel');
       var clientName = sel ? sel.options[sel.selectedIndex].text : '';
+      createPostFromModal();
       showToast('Post criado para ' + clientName + ' em ' + day + '/03!');
       closeNewPostModal();
       if (clf) clf.style.display = 'none';
@@ -5091,14 +5397,29 @@ function openEditPostModal() {
   var saveBtn = document.querySelector('#new-post-modal .modal-actions button:last-child');
   if (saveBtn) {
     saveBtn.textContent = 'Salvar alteracoes';
+    var _editPostId = currentCalPost ? currentCalPost.postId : null;
     saveBtn.onclick = function() {
-      showToast('Post atualizado com sucesso!');
+      var cap2  = (document.getElementById('post-caption')||{}).value||'';
+      var net2  = (document.getElementById('post-network')||{}).value||'';
+      var dest2 = (document.getElementById('post-dest')||{}).value||'';
+      var date2 = (document.getElementById('post-date-input')||{}).value||'';
+      var time2 = (document.getElementById('post-time-input')||{}).value||'';
+      if (_editPostId) {
+        dbUpdate('posts', {id: _editPostId}, {
+          caption: cap2, network: net2, destination: dest2,
+          scheduled_date: date2, scheduled_time: time2,
+          updated_at: new Date().toISOString()
+        });
+      } else if (window._currentBrandId) {
+        savePostToDB(window._currentBrandId, {caption:cap2,network:net2,destination:dest2,scheduled_date:date2,scheduled_time:time2,status:'pending'});
+      }
+      showToast('Post atualizado!');
       closeNewPostModal();
       closeCalPost();
       setTimeout(function(){
         if(title) title.textContent='Nova postagem';
         if(sub) sub.textContent='Adicione o conteudo e configure a postagem';
-        if(saveBtn){saveBtn.textContent='Criar postagem';saveBtn.onclick=function(){showToast('Postagem criada com sucesso!');closeNewPostModal();};}
+        if(saveBtn){saveBtn.textContent='Criar postagem';saveBtn.onclick=function(){createPostFromModal();closeNewPostModal();};}
       },300);
     };
   }
@@ -5145,6 +5466,20 @@ function saveClientProfile() {
     var view=field.querySelector('.cpview'); var edit=field.querySelector('.cpedit');
     if(view&&edit) view.textContent=edit.value||view.textContent;
   });
+  // Save to DB
+  var emailToKey={'ativo@cliente.com':'alpha','pendente@cliente.com':'beta','suspenso@cliente.com':'gamma'};
+  var brandId=currentUser?(emailToKey[currentUser.email]||null):null;
+  if(brandId){
+    var fields={};
+    document.querySelectorAll('.cpfield').forEach(function(f){
+      var lbl=f.querySelector('.cplabel'); var edit=f.querySelector('.cpedit');
+      if(!lbl||!edit) return;
+      var map={'Nome':'responsible_name','Cargo':'responsible_role','E-mail de contato':'email','WhatsApp':'whatsapp','Nome da empresa':'name','Segmento':'segment','Instagram':'instagram','TikTok':'tiktok','Site':'site'};
+      var k=map[lbl.textContent.trim()];
+      if(k) fields[k]=edit.value;
+    });
+    saveBrandToDB(brandId,fields);
+  }
   cancelClientEditProfile();
   showToast('Perfil atualizado com sucesso!');
 }
@@ -5169,6 +5504,10 @@ function saveClientExtraInfo() {
   var val = (document.getElementById('client-extra-info')||{}).value||'';
   if(!val.trim()){showToast('Escreva algo antes de salvar');return;}
   localStorage.setItem('ts_client_extra_'+(currentUser?currentUser.email:''),val);
+  // Save to DB by brand
+  var emailToKey = {'ativo@cliente.com':'alpha','pendente@cliente.com':'beta','suspenso@cliente.com':'gamma'};
+  var brandId = currentUser ? (emailToKey[currentUser.email]||null) : null;
+  if (brandId) saveClientExtraInfoToDB(brandId, val);
   showToast('Informacoes salvas e enviadas para a agencia!');
 }
 function loadClientExtraInfo() {
@@ -5176,6 +5515,10 @@ function loadClientExtraInfo() {
   var saved=localStorage.getItem('ts_client_extra_'+currentUser.email);
   var el=document.getElementById('client-extra-info');
   if(el&&saved) el.value=saved;
+  // Also try from DB
+  var emailToKey={'ativo@cliente.com':'alpha','pendente@cliente.com':'beta','suspenso@cliente.com':'gamma'};
+  var brandId=emailToKey[currentUser.email]||null;
+  if(brandId) loadClientExtraInfoFromDB(brandId).then(function(info){ if(info&&el){el.value=info;localStorage.setItem('ts_client_extra_'+currentUser.email,info);} });
 }
 
 function filterNotificationsForUser() {
@@ -5235,6 +5578,140 @@ function cpReopenTextarea(id, existingText) {
   if(result){result.style.display='none';result.style.cssText='';}
   if(textWrap){textWrap.style.display='block';var ta=textWrap.querySelector('textarea');if(ta){ta.value=existingText;ta.focus();ta.select();}}
 }
+
+
+function createPostFromModal() {
+  var network  = (document.getElementById('post-network')||{}).value||'Instagram';
+  var dest     = (document.getElementById('post-dest')||{}).value||'Feed';
+  var caption  = (document.getElementById('post-caption')||{}).value||'';
+  var date     = (document.getElementById('post-date-input')||{}).value||'';
+  var time     = (document.getElementById('post-time-input')||{}).value||'';
+  var clientSel= document.getElementById('post-client-sel');
+  var brandId  = window._currentBrandId || (clientSel ? clientSel.value : null);
+  var mediaUrl = window._lastUploadedMediaUrl || null;
+  if (!brandId) { showToast('Postagem criada com sucesso!'); return; }
+  savePostToDB(brandId, {
+    network: network, destination: dest, caption: caption,
+    scheduled_date: date, scheduled_time: time,
+    status: date ? 'scheduled' : 'pending',
+    media_url: mediaUrl
+  }).then(function(data) {
+    window._lastUploadedMediaUrl = null;
+    showToast(data && data[0] ? 'Post criado e salvo!' : 'Postagem criada!');
+  });
+}
+
+
+function darBaixaFatura(btn) {
+  // Mark invoice as paid in UI
+  var row = btn.closest('tr');
+  if (row) {
+    var statusView = row.querySelector('.inv-view .client-status');
+    if (statusView) { statusView.className='client-status s-active'; statusView.innerHTML='<span class="status-dot"></span>Pago'; }
+    var invId = row.id; // e.g. inv-row-1
+    var num = invId ? invId.replace('inv-row-','') : '';
+    // Save to DB
+    if (window._currentBrandId && num) {
+      updateInvoiceInDB('inv-'+window._currentBrandId+'-'+num, {status:'paid'});
+    }
+  }
+  showToast('Baixa dada na fatura!');
+}
+
+function savePixKey() {
+  var pixEl = document.getElementById('pix-key-input');
+  var key = pixEl ? pixEl.value.trim() : '';
+  if (!key) { showToast('Informe a chave Pix'); return; }
+  var dispEl = document.getElementById('pix-display');
+  if (dispEl) dispEl.textContent = key;
+  if (window._currentBrandId) saveBrandToDB(window._currentBrandId, {pix_key: key});
+  showToast('Chave Pix salva!');
+}
+
+function aprovarPromessa() {
+  var info = document.getElementById('promise-info');
+  if (info) info.style.display = 'none';
+  if (window._currentBrandId) {
+    dbUpdate('brands', {id: window._currentBrandId}, {promise_status: 'approved', updated_at: new Date().toISOString()});
+  }
+  showToast('Promessa aprovada!');
+}
+
+
+function uploadClientLogoFromProfile(input) {
+  if (!input.files || !input.files[0] || !window._currentBrandId) return;
+  uploadClientLogo(input, window._currentBrandId);
+}
+
+function saveQuickLinks() {
+  if (!window._currentBrandId) return;
+  var driveEl    = document.querySelector('.pfield .plabel');
+  // Find Drive and Contract inputs
+  var driveInput = document.querySelector('[placeholder*="drive.google"]') || document.querySelector('[placeholder*="Drive"]');
+  var contractInput = document.querySelector('[placeholder*="contrato"]') || document.querySelector('[placeholder*="Contrato"]');
+  var drive    = driveInput    ? driveInput.value.trim()    : '';
+  var contract = contractInput ? contractInput.value.trim() : '';
+  if (drive || contract) saveBrandToDB(window._currentBrandId, {drive_link: drive||null, contract_link: contract||null});
+  showToast('Links salvos!');
+}
+
+function saveClientAccess() {
+  if (!window._currentBrandId) return;
+  var emailEl = document.getElementById('client-access-email');
+  var passEl  = document.getElementById('client-access-pass');
+  var email = emailEl ? emailEl.value.trim() : '';
+  var pass  = passEl  ? passEl.value.trim()  : '';
+  if (email || pass) saveBrandToDB(window._currentBrandId, {login_email: email||null, login_pass: pass||null});
+  showToast('Acesso do cliente atualizado!');
+}
+
+function saveContractData() {
+  if (!window._currentBrandId) return;
+  var startEl = document.getElementById('contract-start-input');
+  var endEl   = document.getElementById('contract-end-input');
+  var valEl   = document.getElementById('contract-value-input');
+  var data = {};
+  if (startEl && startEl.value) data.contract_start = startEl.value;
+  if (endEl   && endEl.value)   data.contract_end   = endEl.value;
+  if (valEl   && valEl.value)   data.contract_value = valEl.value;
+  if (Object.keys(data).length) { saveBrandToDB(window._currentBrandId, data); showToast('Contrato atualizado!'); }
+}
+
+function addNewInvoice() {
+  if (!window._currentBrandId) { showToast('Nova fatura adicionada!'); return; }
+  var now  = new Date();
+  var month = now.toLocaleDateString('pt-BR',{month:'short',year:'2-digit'}).replace('. ','/'||'.');
+  var data = {
+    id: 'inv-'+window._currentBrandId+'-new-'+Date.now(),
+    brand_id: window._currentBrandId,
+    description: 'Gestao de redes ' + month,
+    amount: 'R$ 0,00',
+    status: 'pending',
+    month_ref: month,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+  saveInvoiceToDB(window._currentBrandId, data);
+  showToast('Nova fatura adicionada!');
+}
+
+// Show logo upload button when profile is in edit mode
+var _origToggleEdit = toggleEditProfile;
+toggleEditProfile = function() {
+  _origToggleEdit();
+  var btn = document.getElementById('profile-logo-upload-btn');
+  if (btn) btn.style.display = 'flex';
+  var linksBtn = document.getElementById('save-links-btn');
+  if (linksBtn) linksBtn.style.display = 'block';
+};
+var _origCancelEdit = cancelEditProfile;
+cancelEditProfile = function() {
+  _origCancelEdit();
+  var btn = document.getElementById('profile-logo-upload-btn');
+  if (btn) btn.style.display = 'none';
+  var linksBtn = document.getElementById('save-links-btn');
+  if (linksBtn) linksBtn.style.display = 'none';
+};
 
 </script>
 
